@@ -1,15 +1,35 @@
 /*
-theta* Algorithm Implementation from a fork of 
-A* library of Justin Heyes-Jones 
+
+Copyright (c) 2015, Luigi Palmieri, Social Robotics Laboratory
+
+All rights reserved. 
+
+Redistribution and use in source and binary forms, with or without 
+modification, are permitted provided that the following conditions are met: 
+
+ * Redistributions of source code must retain the above copyright notice, 
+   this list of conditions and the following disclaimer. 
+ * Redistributions in binary form must reproduce the above copyright 
+   notice, this list of conditions and the following disclaimer in the 
+   documentation and/or other materials provided with the distribution. 
+
+THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND ANY 
+EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED 
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE 
+DISCLAIMED. IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE FOR ANY 
+DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES 
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR 
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER 
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT 
+LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY 
+OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH 
+DAMAGE. 
 
 */
 
-#ifndef STLTHETASTAR_H
-#define STLTHETASTAR_H
 // used for text debugging
 #include <iostream>
 #include <stdio.h>
-//#include <conio.h>
 #include <assert.h>
 
 // stl includes
@@ -18,14 +38,13 @@ A* library of Justin Heyes-Jones
 #include <vector>
 #include <cfloat>
 
+
+#include <unistd.h>
+
 using namespace std;
 
-// fast fixed size memory allocator, used for fast node memory management
-#include "fsa.h"
 
-// Fixed size memory allocator can be disabled to compare performance
-// Uses std new and delete instead if you turn it off
-#define USE_FSA_MEMORY 1
+#define INF_COST 1000000
 
 // disable warning that debugging information has lines that are truncated
 // occurs in stl headers
@@ -33,7 +52,7 @@ using namespace std;
 
 template <class T> class ThetaStarState;
 
-// The AStar search class. UserState is the users state space type
+// UserState is the users state space type
 template <class UserState> class ThetaStarSearch
 {
 
@@ -50,6 +69,7 @@ public: // data
 	};
 
 
+	bool euclideanCost;
 	// A node represents a possible state in the search
 	// The user provided state type is included inside this type
 
@@ -61,7 +81,7 @@ public: // data
 
 			Node *parent; // used during the search to record the parent of successor nodes
 			Node *child; // used after the search for the application to view the search in reverse
-			
+			double yaw;
 			float g; // cost of this node + it's predecessors
 			float h; // heuristic estimate of distance to goal
 			float f; // sum of cumulative cost of predecessors and self and heuristic
@@ -69,6 +89,7 @@ public: // data
 			Node() :
 				parent( 0 ),
 				child( 0 ),
+				yaw( 0.0f),
 				g( 0.0f ),
 				h( 0.0f ),
 				f( 0.0f )
@@ -87,8 +108,22 @@ public: // data
 		public:
 
 			bool operator() ( const Node *x, const Node *y ) const
-			{
-				return x->f > y->f;
+			{	
+				if(x->f > y->f)
+					return true;
+
+				if(x->f < y->f)
+					return false;
+				// We break ties among vertices with the same
+				// f-values in favor of larger g-values
+				if(x->f == y->f)
+				{
+					if(x->g > y->g)
+						return true;
+					else
+						return false;
+
+				}
 			}
 	};
 
@@ -99,21 +134,25 @@ public: // methods
 	// constructor just initialises private data
     ThetaStarSearch() :
 		m_AllocateNodeCount(0),
-	/** WARNING Need to choose the right dimension for the pre-allocated memory **/
-#if USE_FSA_MEMORY
-        m_FixedSizeAllocator( 45000 ),
-#endif
 		m_State( SEARCH_STATE_NOT_INITIALISED ),
 		m_CurrentSolutionNode( NULL ),
 		m_CancelRequest( false )
 	{
 	}
 
+		// constructor just initialises private data
+    ThetaStarSearch(bool euclideanCostChoice) :
+		m_AllocateNodeCount(0),
+		m_State( SEARCH_STATE_NOT_INITIALISED ),
+		m_CurrentSolutionNode( NULL ),
+		m_CancelRequest( false )
+	{
+
+		euclideanCost=euclideanCostChoice;
+	}
+
     ThetaStarSearch( int MaxNodes ) :
 		m_AllocateNodeCount(0),
-#if USE_FSA_MEMORY
-		m_FixedSizeAllocator( MaxNodes ),
-#endif
 		m_State( SEARCH_STATE_NOT_INITIALISED ),
 		m_CurrentSolutionNode( NULL ),
 		m_CancelRequest( false )
@@ -147,7 +186,7 @@ public: // methods
 		m_Start->g = 0; 
 		m_Start->h = m_Start->m_UserState.GoalDistanceEstimate( m_Goal->m_UserState );
 		m_Start->f = m_Start->g + m_Start->h;
-		m_Start->parent = 0;
+		m_Start->parent = m_Start; // fix it.
 
 		// Push the start node on the Open list
 
@@ -201,8 +240,24 @@ public: // methods
 			m_Goal->parent = n->parent;
 			m_Goal->g = n->g;
 
+			std::cout<<"Setting Goal orientation.."<<std::endl;
+
+           if( !(n->m_UserState.lineofsight(&(n->parent->m_UserState),&((m_Goal)->m_UserState))) )
+           	{
+
+
+                (m_Goal)->m_UserState.setOrientation(&(n->parent->m_UserState));
+            }			
+
+            std::cout<<"Setting Goal orientation done"<<std::endl;
+            m_Goal->m_UserState.steer=n->m_UserState.steer;
+
+
+            m_Goal->m_UserState.costs=m_Goal->m_UserState.getLineCost();
+
 			// A special case is that the goal was passed in as the start state
 			// so handle that here
+
 			if( false == n->m_UserState.IsSameState( m_Start->m_UserState ) )
 			{
 				FreeNode( n );
@@ -212,20 +267,29 @@ public: // methods
 				Node *nodeParent = m_Goal->parent;
 
 				do 
-				{
+				{	
 					nodeParent->child = nodeChild;
-
 					nodeChild = nodeParent;
 					nodeParent = nodeParent->parent;
-				
+					
+						nodeParent->m_UserState.PrintNodeInfo();
+						nodeChild->m_UserState.PrintNodeInfo();
+					
+					if(nodeParent == nodeChild && nodeChild != m_Start){
+						
+						usleep(200);
+						nodeParent->m_UserState.PrintNodeInfo();
+						nodeChild->m_UserState.PrintNodeInfo();
+						std::exit(EXIT_FAILURE);
+					}
 				} 
-				while( nodeChild != m_Start ); // Start is always the first node by definition
+				while( nodeChild != m_Start && nodeChild!=NULL); // Start is always the first node by definition
 
 			}
 
+
 			// delete nodes that aren't needed for the solution
 			FreeUnusedNodes();
-
 			m_State = SEARCH_STATE_SUCCEEDED;
 
 			return m_State;
@@ -233,11 +297,22 @@ public: // methods
 		else // not goal
 		{
 
+
+			typename vector< Node * >::iterator closedlist_result;
+			typename vector< Node * >::iterator openlist_result;
+
+			
+
+   			m_ClosedList.push_back( n );
+
+
 			// We now need to generate the successors of this node
 			// The user helps us to do this, and we keep the new nodes in
 			// m_Successors ...
 
 			m_Successors.clear(); // empty vector of successor nodes to n
+
+
 
 			// User provides this functions and uses AddSuccessor to add each successor of
 			// node 'n' to m_Successors
@@ -263,57 +338,13 @@ public: // methods
 				return m_State;
 			}
 			
+
 			// Now handle each successor to the current node ...
 			for( typename vector< Node * >::iterator successor = m_Successors.begin(); successor != m_Successors.end(); successor ++ )
 			{
 
-				// 	The g value for this successor ...
-				float newg = n->g + n->m_UserState.GetCost( (*successor)->m_UserState );
 
-                typename vector< Node * >::iterator closedlist_result;
-                typename vector< Node * >::iterator openlist_result;
-
-
-
-
-                float parent_g;
-                double tcost;
-
-                // Check the Line of sight to allow any-angle paths
-
-                if(n->parent!=NULL && n->m_UserState.lineofsight(&(n->parent->m_UserState),&((*successor)->m_UserState))){
-                    // g value for the parent
-                    parent_g= n->parent->g;
-                    // the new cost is  g(parent(current node))+cost(parent(current node),current neighbor)
-                    tcost=parent_g+n->parent->m_UserState.GetCost( (*successor)->m_UserState );
-
-
-
-
-                for( openlist_result = m_OpenList.begin(); openlist_result != m_OpenList.end(); openlist_result ++ )
-                {
-                    if( (*openlist_result)->m_UserState.IsSameState( (*successor)->m_UserState ) )
-                    {
-                        break;
-                    }
-                }
-
-                if( openlist_result != m_OpenList.end() )
-                {
-
-                    // we found this state on open
-
-                    if( (*openlist_result)->g <= tcost )
-                    {
-                        FreeNode( (*successor) );
-
-                        // the one on Open is cheaper than this one
-                        continue;
-                    }
-                }
-
-
-
+				/// if successor is not in closed
                 for( closedlist_result = m_ClosedList.begin(); closedlist_result != m_ClosedList.end(); closedlist_result ++ )
                 {
                     if( (*closedlist_result)->m_UserState.IsSameState( (*successor)->m_UserState ) )
@@ -325,141 +356,45 @@ public: // methods
                 if( closedlist_result != m_ClosedList.end() )
                 {
 
-                    // we found this state on closed
-
-                    if( (*closedlist_result)->g <= tcost )
-                    {
-                        // the one on Closed is cheaper than this one
-                        FreeNode( (*successor) );
-
-                        continue;
-                    }
+                	// we found this state on closed
+                	// consider the next successor now
+                	continue;
                 }
 
 
-
-
-                (*successor)->parent = n->parent;
-                (*successor)->g = tcost;
-                (*successor)->h = (*successor)->m_UserState.GoalDistanceEstimate( m_Goal->m_UserState );
-                (*successor)->f = (*successor)->g + (*successor)->h;
-                }
-
-                else{
-
-
-				// Now we need to find whether the node is on the open or closed lists
-				// If it is but the node that is already on them is better (lower g)
-				// then we can forget about this successor
-
-				// First linear search of open list to find node
-
-//				typename vector< Node * >::iterator openlist_result;
+                /// if successor is not in open set cost to inf
 
 				for( openlist_result = m_OpenList.begin(); openlist_result != m_OpenList.end(); openlist_result ++ )
 				{
-					if( (*openlist_result)->m_UserState.IsSameState( (*successor)->m_UserState ) )
-					{
-						break;					
-					}
+				    if( (*openlist_result)->m_UserState.IsSameState( (*successor)->m_UserState ) )
+				    {
+				        break;
+				    }
+
+
 				}
 
 				if( openlist_result != m_OpenList.end() )
 				{
 
-					// we found this state on open
+				    // we found this state on open
+				}else{
 
-					if( (*openlist_result)->g <= newg )
-					{
-						FreeNode( (*successor) );
+					// State not in open list
+					// Set its g value to inf
+					(*successor)->g = INF_COST;
+		            (*successor)->parent = NULL;
 
-						// the one on Open is cheaper than this one
-						continue;
-					}
-				}
-
-//				typename vector< Node * >::iterator closedlist_result;
-
-				for( closedlist_result = m_ClosedList.begin(); closedlist_result != m_ClosedList.end(); closedlist_result ++ )
-				{
-					if( (*closedlist_result)->m_UserState.IsSameState( (*successor)->m_UserState ) )
-					{
-						break;					
-					}
-				}
-
-				if( closedlist_result != m_ClosedList.end() )
-				{
-
-					// we found this state on closed
-
-					if( (*closedlist_result)->g <= newg )
-					{
-						// the one on Closed is cheaper than this one
-						FreeNode( (*successor) );
-
-						continue;
-					}
-				}
-
-
-                {
-
-				// This node is the best node so far with this particular state
-				// so lets keep it and set up its AStar specific data ...
-
-				(*successor)->parent = n;
-				(*successor)->g = newg;
-				(*successor)->h = (*successor)->m_UserState.GoalDistanceEstimate( m_Goal->m_UserState );
-				(*successor)->f = (*successor)->g + (*successor)->h;
-                }
-
-                }
-
-
-                // Remove successor from closed if it was on it
-				if( closedlist_result != m_ClosedList.end() )
-				{
-					// remove it from Closed
-					FreeNode(  (*closedlist_result) ); 
-					m_ClosedList.erase( closedlist_result );
-
-					// Fix thanks to ...
-					// Greg Douglas <gregdouglasmail@gmail.com>
-					// who noticed that this code path was incorrect
-					// Here we have found a new state which is already CLOSED
-					// anus
 					
 				}
 
-				// Update old version of this node
-				if( openlist_result != m_OpenList.end() )
-				{	   
+				UpdateVertex(n, *successor);
 
-					FreeNode( (*openlist_result) ); 
-			   		m_OpenList.erase( openlist_result );
 
-					// re-make the heap 
-					// make_heap rather than sort_heap is an essential bug fix
-					// thanks to Mike Ryynanen for pointing this out and then explaining
-					// it in detail. sort_heap called on an invalid heap does not work
-					make_heap( m_OpenList.begin(), m_OpenList.end(), HeapCompare_f() );
-			
-				}
+          		
+            }
 
-				// heap now unsorted
-				m_OpenList.push_back( (*successor) );
-
-				// sort back element into heap
-				push_heap( m_OpenList.begin(), m_OpenList.end(), HeapCompare_f() );
-
-			}
-
-			// push n onto Closed, as we have expanded it now
-
-			m_ClosedList.push_back( n );
-
-		} // end else (not goal so expand)
+        }
 
  		return m_State; // Succeeded bool is false at this point. 
 
@@ -467,6 +402,157 @@ public: // methods
 
 
 
+	bool UpdateVertex(Node *n, Node *successor){
+
+
+
+
+                typename vector< Node * >::iterator closedlist_result;
+                typename vector< Node * >::iterator openlist_result;
+
+
+
+ 		
+                double tcost=0;
+
+		        if(n->parent!=NULL && n->m_UserState.lineofsight(&(n->parent->m_UserState),&((successor)->m_UserState)) ){
+                    	
+       				
+
+	                    if(euclideanCost)
+	                    	tcost=n->parent->g+n->parent->m_UserState.GetCost( (successor)->m_UserState );
+	                    else
+							tcost=n->parent->g+n->parent->m_UserState.GetCostTrajFromParent((n->parent->m_UserState),(successor)->m_UserState );
+						    // tcost=n->parent->g+n->parent->m_UserState.GetCostTraj((successor)->m_UserState );
+
+						if(tcost<(successor)->g){
+
+
+				                if( n->parent==n && n->parent!= m_Start){
+				                	n->parent->m_UserState.PrintNodeInfo();
+				                	n->m_UserState.PrintNodeInfo();
+				                	(successor)->m_UserState.PrintNodeInfo();
+				                	cout<<endl;
+				                }
+
+								// Update cost and Parent
+								double h_succ = (successor)->m_UserState.GoalDistanceEstimate( m_Goal->m_UserState );
+				                (successor)->parent = n->parent;
+				                (successor)->yaw = (successor)->m_UserState.theta;
+				                (successor)->g = tcost;
+				                (successor)->h = h_succ;
+				                (successor)->f = tcost + h_succ;
+				                (successor)->m_UserState.setType(1); 
+
+
+				                // check if successor is in open list
+				                for( openlist_result = m_OpenList.begin(); openlist_result != m_OpenList.end(); openlist_result ++ )
+				                {
+				                    if( (*openlist_result)->m_UserState.IsSameState( (successor)->m_UserState ) )
+				                    {
+				                        break;
+				                    }
+
+
+				                }
+
+
+				                // if in open list remove it
+				                if( openlist_result != m_OpenList.end() )
+				                {
+
+				                    // we found this state on open
+				                    FreeNode( (*openlist_result) );
+
+				                    m_OpenList.erase( openlist_result );
+								
+									make_heap( m_OpenList.begin(), m_OpenList.end(), HeapCompare_f() );
+				                   
+				                }
+
+
+
+								// heap now unsorted
+								m_OpenList.push_back( (successor) );
+
+								// sort back element into heap
+								push_heap( m_OpenList.begin(), m_OpenList.end(), HeapCompare_f() );
+
+
+						}
+
+
+            	}
+                else{
+               		// A* Case
+
+					float newg=0;
+
+	                if(euclideanCost)
+	                	newg = n->g + n->m_UserState.GetCost( (successor)->m_UserState );
+	 	            else
+	                	newg = n->g + n->m_UserState.GetCostTraj( (successor)->m_UserState );
+
+
+	                if(newg < (successor)->g){
+
+			                // This node is the best node so far with this particular state
+							// so lets keep it and set up its AStar specific data ...
+			           		if(n->parent==n && n->parent!= m_Start){
+									n->parent->m_UserState.PrintNodeInfo();
+				                	n->m_UserState.PrintNodeInfo();
+				                	(successor)->m_UserState.PrintNodeInfo();
+				                	cout<<endl;
+				            }
+
+				            double h_succ =  (successor)->m_UserState.GoalDistanceEstimate( m_Goal->m_UserState );
+							(successor)->parent = n;
+							(successor)->g = newg;
+							(successor)->h = h_succ;
+							(successor)->f = newg + h_succ;
+
+							(successor)->yaw = (successor)->m_UserState.theta;
+			                (successor)->m_UserState.costs = (successor)->m_UserState.getLineCost();
+							(successor)->m_UserState.setType(1); 
+
+
+
+							for( openlist_result = m_OpenList.begin(); openlist_result != m_OpenList.end(); openlist_result ++ )
+							{
+								if( (*openlist_result)->m_UserState.IsSameState( (successor)->m_UserState ) )
+								{
+									break;					
+								}
+							}
+
+							if( openlist_result != m_OpenList.end() )
+							{
+
+				                    // we found this state on open
+				                    FreeNode( (*openlist_result) );
+
+				                    m_OpenList.erase( openlist_result );
+								
+									make_heap( m_OpenList.begin(), m_OpenList.end(), HeapCompare_f() );
+
+							}
+
+
+
+
+							// heap now unsorted
+							m_OpenList.push_back( (successor) );
+
+							// sort back element into heap
+							push_heap( m_OpenList.begin(), m_OpenList.end(), HeapCompare_f() );
+
+	                }
+
+	            }
+
+	        return true;
+
+	}
 
 	// User calls this to add a successor to a list of successors
 	// when expanding the search frontier
@@ -477,7 +563,7 @@ public: // methods
 		if( node )
 		{
 			node->m_UserState = State;
-
+			node->yaw = State.theta ;
 			m_Successors.push_back( node );
 
 			return true;
@@ -691,19 +777,16 @@ public: // methods
 
 	void EnsureMemoryFreed()
 	{
-#if USE_FSA_MEMORY
 		assert(m_AllocateNodeCount == 0);
-#endif
 
 	}
 
-private: // methods
+private: 
 
-	// This is called when a search fails or is cancelled to free all used
-	// memory 
+	// delete all nodes
 	void FreeAllNodes()
 	{
-		// iterate open list and delete all nodes
+		
 		typename vector< Node * >::iterator iterOpen = m_OpenList.begin();
 
 		while( iterOpen != m_OpenList.end() )
@@ -716,7 +799,6 @@ private: // methods
 
 		m_OpenList.clear();
 
-		// iterate closed list and delete unused nodes
 		typename vector< Node * >::iterator iterClosed;
 
 		for( iterClosed = m_ClosedList.begin(); iterClosed != m_ClosedList.end(); iterClosed ++ )
@@ -733,9 +815,7 @@ private: // methods
 	}
 
 
-	// This call is made by the search class when the search ends. A lot of nodes may be
-	// created that are still present when the search ends. They will be deleted by this 
-	// routine once the search ends
+	
 	void FreeUnusedNodes()
 	{
 		// iterate open list and delete unused nodes
@@ -778,22 +858,10 @@ private: // methods
 
 	// Node memory management
 	Node *AllocateNode()
-	{
-
-#if !USE_FSA_MEMORY
+	{	
+		m_AllocateNodeCount ++;
 		Node *p = new Node;
 		return p;
-#else
-		Node *address = m_FixedSizeAllocator.alloc();
-
-		if( !address )
-		{
-			return NULL;
-		}
-		m_AllocateNodeCount ++;
-		Node *p = new (address) Node;
-		return p;
-#endif
 	}
 
 	void FreeNode( Node *node )
@@ -801,27 +869,23 @@ private: // methods
 
 		m_AllocateNodeCount --;
 
-#if !USE_FSA_MEMORY
 		delete node;
-#else
-		node->~Node();
-		m_FixedSizeAllocator.free( node );
-#endif
 	}
 
-private: // data
 
-	// Heap (simple vector but used as a heap, cf. Steve Rabin's game gems article)
+
+private: 
+
+	// Heap using std:vector
 	vector< Node *> m_OpenList;
 
-	// Closed list is a vector.
+	// Closed list is a std::vector.
 	vector< Node * > m_ClosedList; 
 
-	// Successors is a vector filled out by the user each type successors to a node
-	// are generated
+	// Contains the successors of the current node evaluated during the search
 	vector< Node * > m_Successors;
 
-	// State
+	// Status of the State
 	unsigned int m_State;
 
 	// Counts steps
@@ -833,13 +897,8 @@ private: // data
 
 	Node *m_CurrentSolutionNode;
 
-#if USE_FSA_MEMORY
-	// Memory
- 	FixedSizeAllocator<Node> m_FixedSizeAllocator;
-#endif
 	
-	//Debug : need to keep these two iterators around
-	// for the user Dbg functions
+	// Two iterators that keep debug info
 	typename vector< Node * >::iterator iterDbgOpen;
 	typename vector< Node * >::iterator iterDbgClosed;
 
@@ -850,6 +909,9 @@ private: // data
 
 };
 
+
+
+/// Template Classe to use as state during the Search
 template <class T> class ThetaStarState
 {
 public:
@@ -861,8 +923,10 @@ public:
 	virtual bool IsSameState( T &rhs ) = 0; // Returns true if this node is the same as the rhs node
     virtual bool lineofsight(T *successor,T *parent_node)=0;
 
+
+    int OPTM_ORIENTATIONS;
 };
 
-#endif
 
    
+
